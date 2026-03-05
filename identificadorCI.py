@@ -7,6 +7,27 @@ import os
 # ==========================================
 # 1. FUNCIONES DE VISIÓN COMPUTACIONAL (NUEVAS)
 
+def aislar_zona_datos(imagen_alineada):
+    """
+    Recorta únicamente la porción izquierda de la cédula (caja roja)
+    basándose en porcentajes del documento ya aplanado.
+    """
+    h, w = imagen_alineada.shape[:2]
+    
+    # Coordenadas relativas (porcentajes de la imagen total)
+    # Ajustado a la caja roja que dibujaste
+    x_min = int(w * 0.10)  # 2% desde el borde izquierdo
+    x_max = int(w * 0.65)  # 65% del ancho (corta antes de la foto y el director)
+    y_min = int(h * 0.15)  # 15% desde arriba (corta el encabezado de "República")
+    y_max = int(h * 1)  # 75% del alto (corta la huella y fechas de expedición/vencimiento)
+    
+    zona_segura = imagen_alineada[y_min:y_max, x_min:x_max]
+    
+    # Guardamos este recorte para que puedas verlo y verificar que el cuadro rojo está bien calculado
+    cv2.imwrite("Recorte_Caja_Roja.jpg", zona_segura)
+    
+    return zona_segura
+
 def parsear_datos(textos):
     datos = {
         "Cedula": None,
@@ -339,9 +360,10 @@ def extraer_datos_cedula(ruta_imagen, lector):
     # --- PREPARACIÓN "MODO ESTEROIDES" SOLO PARA EL OCR ---
     print(f"[{ruta_imagen}] Optimizando imagen en memoria para el OCR...")
     
+    imagen_zona_datos = aislar_zona_datos(imagen_procesada_color)
     # 2. Agrandamos la imagen al doble (EasyOCR lee MUCHO mejor las letras grandes)
-    h, w = imagen_procesada_color.shape[:2]
-    img_ocr = cv2.resize(imagen_procesada_color, (w*4, h*4), interpolation=cv2.INTER_CUBIC)
+    h, w = imagen_zona_datos.shape[:2]
+    img_ocr = cv2.resize(imagen_zona_datos, (w*4, h*4), interpolation=cv2.INTER_CUBIC)
     cv2.imwrite("Ultimo_recorte_ocr.jpg", img_ocr)
     
     # 3. La pasamos a grises (elimina el ruido del color de fondo)
@@ -437,6 +459,16 @@ def extraer_datos_cedula(ruta_imagen, lector):
                     else:
                         datos["Cedula"] = f"{int(nums_refinados[-8:]):,}".replace(",", ".")
 
+    campos_faltantes = [clave for clave, valor in datos.items() if not valor]
+    
+    if campos_faltantes:
+        mensaje_error = f"Documento ilegible o incompleto. Faltan los campos: {', '.join(campos_faltantes)}"
+        print(f"[ERROR 400] {mensaje_error}")
+        
+        # Levantamos un ValueError genérico. 
+        # Tu framework de API debe atrapar esto y devolver el HTTP 400.
+        raise ValueError(mensaje_error)
+        
     print("\n--- Datos Estructurados ---")
     for clave, valor in datos.items():
         print(f"{clave}: {valor}")
