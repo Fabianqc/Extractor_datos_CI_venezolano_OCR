@@ -68,15 +68,19 @@ def parsear_datos(textos):
                 
                 datos["Cedula"] = f"{int(numeros_limpios):,}".replace(",", ".")
                 
+        LABELS_NOMBRES = ["NOMBRES", "NOMBRE", "NONBRES", "AOSRES", "AO;SRES", "NOSBRES", "NOM3RES", "NOMERES", '"OUPRES', 'OUPRES',"NOMIBRES"]
+        LABELS_APELLIDOS = ["APELLIDOS", "APELLIDO", "AFELLIDOS", "APELUIDOS", "APELLID0S", "APELLID0", "APELLIDOS", "ACALLIOS", "KPELLDOS"]
         # Buscar Nombres (A veces OCR lo lee como 'NOMBAES')
-        if ("NOMBRES" in texto_limpio or "NOMBAES" in texto_limpio or "NOMBRE" in texto_limpio) and i + 1 < len(textos):
+        if any(label in texto_limpio for label in LABELS_NOMBRES) and i + 1 < len(textos):
             datos["Nombres"] = textos[i+1].upper()
             
         # Buscar Apellidos (A veces OCR lo lee como 'APElUIDOS')
-        if ("APELLIDOS" in texto_limpio or "APELUIDOS" in texto_limpio or "APELLIDO" in texto_limpio) and i + 1 < len(textos):
+        if any(label in texto_limpio for label in LABELS_APELLIDOS) and i + 1 < len(textos):
             datos["Apellidos"] = textos[i+1].upper()
             
         # Buscar Estado civil (buscar palabras clave en cualquier parte)
+        if any(label in texto_limpio for label in LABELS_APELLIDOS) and i + 1 < len(textos):
+            datos["Apellidos"] = textos[i+1].upper()
         if "SOLTERO" in texto_limpio or "SOLTERA" in texto_limpio:
             datos["Estado_Civil"] = "SOLTERO/A"
         elif "CASADO" in texto_limpio or "CASADA" in texto_limpio:
@@ -121,12 +125,6 @@ def parsear_datos(textos):
                     datos["Apellidos"] = candidatos[0]
                 if len(candidatos) >= 2 and not datos["Nombres"]:
                     datos["Nombres"] = candidatos[1]
-                
-        # Buscar Nacionalidad
-        if "VENEZOLANO" in texto_limpio or "VENEZOLANA" in texto_limpio or "VEN" in texto_limpio:
-            datos["Nacionalidad"] = "Venezolano/a"
-        elif "EXTRANJERO" in texto_limpio or "EXTRANJERA" in texto_limpio:
-            datos["Nacionalidad"] = "Extranjero/a"
             
     # --- Búsqueda Global de Fecha de Nacimiento ---
     # Si la fecha estaba muy unida a otro texto y el bucle falló, buscamos en todo el texto unido
@@ -160,6 +158,52 @@ def ordenar_puntos(pts):
     rect[3] = pts[np.argmax(diff)]
     
     return rect
+
+def corregir_orientacion(imagen, lector):
+    """
+    Verifica si la imagen está vertical o de cabeza y la endereza 
+    automáticamente usando proporciones y una lectura OCR ultrarrápida.
+    """
+    if imagen is None:
+        return None
+
+    h, w = imagen.shape[:2]
+    
+    # 1. FORZAR HORIZONTAL (Apaisado)
+    if h > w:
+        print("[ORIENTACIÓN] Imagen vertical detectada. Rotando 90 grados...")
+        # Rotamos 90 grados a favor de las manecillas del reloj
+        imagen = cv2.rotate(imagen, cv2.ROTATE_90_CLOCKWISE)
+        h, w = imagen.shape[:2] # Actualizamos las nuevas dimensiones
+
+    # 2. PRUEBA DE 180 GRADOS (De cabeza)
+    # Recortamos solo el 30% de arriba. Esto hace que el OCR tarde milisegundos
+    recorte_superior = imagen[0:int(h * 0.3), 0:w]
+    
+    # Lo pasamos a grises para máxima velocidad
+    gris_superior = cv2.cvtColor(recorte_superior, cv2.COLOR_BGR2GRAY)
+    
+    print("[ORIENTACIÓN] Verificando si el texto está de cabeza...")
+    # detail=0 hace que EasyOCR solo devuelva una lista de textos planos (sin coordenadas)
+    resultados_rapidos = lector.readtext(gris_superior, detail=0)
+    
+    texto_arriba = " ".join(resultados_rapidos).upper()
+    
+    # Palabras clave que SIEMPRE están en la parte superior de la cédula
+    palabras_clave = ["REPUBLICA", "BOLIVARIANA", "VENEZUELA", "CEDULA", "IDENTIDAD"]
+    
+    # Contamos cuántas palabras clave logró leer
+    coincidencias = sum(1 for palabra in palabras_clave if palabra in texto_arriba)
+    
+    if coincidencias == 0:
+        # Si no leyó "Republica" ni "Cedula", lo más probable es que esté leyendo 
+        # la huella dactilar o los números de abajo al revés.
+        print("[ORIENTACIÓN] Imagen de cabeza. Rotando 180 grados...")
+        imagen = cv2.rotate(imagen, cv2.ROTATE_180)
+    else:
+        print("[ORIENTACIÓN] Imagen derecha confirmada.")
+
+    return imagen
 
 def escanear_documento(imagen):
     """
@@ -227,15 +271,15 @@ def escanear_documento(imagen):
     warped = cv2.warpPerspective(imagen_original, M, (maxWidth, maxHeight))
 
     # 4. Mejora de la imagen (Efecto Escáner digital)
-    warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    #warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
     
     # Aplicar Adaptive Thresholding para fondo blanco y letras negras
 
     # Guardar el recorte solicitado
-    cv2.imwrite("Ultimo_recorte.jpg", warped_gray)
+    cv2.imwrite("Ultimo_recorte.jpg", warped)
     print("[INFO] Documento escaneado y guardado como 'Ultimo_recorte.jpg'")
 
-    return warped_gray
+    return warped
 
 # ==========================================
 # 2. FUNCIONES DE EXTRACCIÓN (ACTUALIZADAS)
@@ -263,10 +307,10 @@ def parsear_cedula(resultados):
         "FABRICIO PEREZ MORON", "DANTE RIVAS", "GUSTAVO VIZCAINO",
         "JUAN DUGARTE", "JUAN DUGARIE", "JUAN DXGARRE", "ANABEL JIMÉNEZ", 
         "GUCTAVO VIRCAINO", "DIRECTORA", "DIRECTOR", "MINISTERIO",
-        "REPUBLICA", "SAIME", "VENEZUELA", "BOLIVARIANA"
+        "REPUBLICA", "SAIME", "VENEZUELA", "BOLIVARIANA", "NOMIBRES","NOMBRES", "NOMBRE", "NONBRES", "AOSRES", "AO;SRES", "NOSBRES", "NOM3RES", "NOMERES", '"OUPRES', 'OUPRES',"APELLIDOS", "APELLIDO", "AFELLIDOS", "APELUIDOS", "APELLID0S", "APELLID0", "APELLIDOS", "ACALLIOS", "KPELLDOS"
     ]
 
-    LABELS_NOMBRES = ["NOMBRES", "NOMBRE", "NONBRES", "AOSRES", "AO;SRES", "NOSBRES", "NOM3RES", "NOMERES", '"OUPRES', 'OUPRES']
+    LABELS_NOMBRES = ["NOMBRES", "NOMBRE", "NONBRES", "AOSRES", "AO;SRES", "NOSBRES", "NOM3RES", "NOMERES", '"OUPRES', 'OUPRES',"NOMIBRES"]
     LABELS_APELLIDOS = ["APELLIDOS", "APELLIDO", "AFELLIDOS", "APELUIDOS", "APELLID0S", "APELLID0", "APELLIDOS", "ACALLIOS", "KPELLDOS"]
     
     def limpiar_valor(txt):
@@ -343,15 +387,18 @@ def extraer_datos_cedula(ruta_imagen, lector):
         lector = easyocr.Reader(['es', 'en'], gpu=True)
     
     imagen_raw = cv2.imread(ruta_imagen)
-    imagen_original = imagen_raw.copy()
+    
     if imagen_raw is None:
         raise FileNotFoundError(f"No se pudo cargar la imagen: {ruta_imagen}")
 
+    imagen_raw = corregir_orientacion(imagen_raw, lector)
+    
     print(f"[{ruta_imagen}] Aplicando escáner documental (recorte y perspectiva)...")
     
     # 1. Aplicar escáner documental (Recorte perfecto a color)
     # Asegúrate de que la función escanear_documento esté retornando la imagen a color (warped)
     imagen_procesada_color = escanear_documento(imagen_raw)
+    imagen_original = imagen_procesada_color.copy()
     
     # Guardamos la foto bonita y natural para tus registros
     cv2.imwrite("Ultimo_recorte.jpg", imagen_procesada_color)
@@ -383,7 +430,7 @@ def extraer_datos_cedula(ruta_imagen, lector):
     # 5. Pasamos la imagen súper nítida al OCR con parámetros avanzados
     # mag_ratio=1.5: Aumenta internamente la imagen un 50% extra en el motor OCR.
     # contrast_ths y adjust_contrast: Obliga a la IA a forzar el contraste interno si hay sombras.
-    resultados = lector.readtext(
+    resultados_crudos = lector.readtext(
         img_ocr_sharp, 
         detail=1, 
         mag_ratio=1.5, 
@@ -391,73 +438,92 @@ def extraer_datos_cedula(ruta_imagen, lector):
         adjust_contrast=0.7
     )
     
+    umbral_confianza = 0.50
+    resultados = []
+    
     with open("OCR_Test.txt", "a", encoding="utf-8") as f:
-        f.write(f"\n{'='*20} {ruta_imagen} {'='*20}\n")
-        for i, res in enumerate(resultados):
-            # res[0] = coordenadas, res[1] = texto, res[2] = confianza
-            f.write(f"[{i}] {res[1]} (Conf: {res[2]:.2f})\n")  
+        f.write(f"\n{'='*20} {ruta_imagen} (FILTRO > {umbral_confianza}) {'='*20}\n")
+        
+        for i, res in enumerate(resultados_crudos):
+            texto = res[1]
+            confianza = res[2]
+            
+            if confianza >= umbral_confianza:
+                # Si pasa el filtro, lo guardamos para procesarlo
+                resultados.append(res)
+                f.write(f"{texto} (Conf: {confianza:.2f})\n")
+            # else:
+            #     # Si no pasa, lo registramos para saber qué perdimos
+            #     f.write(f"[DESCARTADO] {texto} (Conf: {confianza:.2f})\n")
+
     # Extraer solo el texto para el primer parsing
     texto_solo = [res[1] for res in resultados]
     datos = parsear_datos(texto_solo)
     
    # --- RE-OCR DIRIGIDO PARA LA CÉDULA ---
     # Si detectamos una cédula, intentamos mejorar su precisión
-    id_bloque = -1
-    if datos["Cedula"]:
-        cedula_digits = re.sub(r'\D', '', datos["Cedula"])
-        print(f"[{ruta_imagen}] Buscando caja delimitadora para cédula: {cedula_digits}")
-        
-        # Buscamos qué bloque contenía la mayoría de los dígitos de la cédula
-        max_overlap = 0
-        for i, res in enumerate(resultados):
-            res_digits = re.sub(r'\D', '', res[1])
-            if len(res_digits) >= 6:
-                matches = sum(1 for d in cedula_digits if d in res_digits)
-                if matches > max_overlap:
-                    max_overlap = matches
-                    id_bloque = i
-                
-    if id_bloque != -1:
-        print(f"[{ruta_imagen}] Bloque de cédula encontrado en índice {id_bloque}: '{resultados[id_bloque][1]}'")
-        bbox = resultados[id_bloque][0]
-        # bbox son 4 puntos: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-        x_min = int(min(p[0] for p in bbox))
-        x_max = int(max(p[0] for p in bbox))
-        y_min = int(min(p[1] for p in bbox))
-        y_max = int(max(p[1] for p in bbox))
-        
-        # Añadir un pequeño margen al recorte
-        margen = 5
-        
-        # ¡CORRECCIÓN AQUÍ! Usamos la imagen que ya está en memoria (img_ocr_gray)
-        # Sus dimensiones cuadran perfectamente con las coordenadas del bbox.
-        h_ocr, w_ocr = img_ocr_gray.shape[:2]
-        crop_id = img_ocr_gray[max(0, y_min-margen):min(h_ocr, y_max+margen), 
-                               max(0, x_min-margen):min(w_ocr, x_max+margen)]
-        
-        if crop_id.size > 0:
-            # Como la imagen ya viene agrandada x2 de pasos anteriores, 
-            # no hace falta hacerle cv2.resize otra vez. Directamente aplicamos threshold.
-            crop_bin = cv2.adaptiveThreshold(crop_id, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                            cv2.THRESH_BINARY, 11, 2)
+    cedula_limpia_actual = re.sub(r'\D', '', datos.get("Cedula", "") or "")
+
+    if datos["Cedula"] and len(cedula_limpia_actual) < 7:
+        print(f"[{ruta_imagen}] Cédula incompleta detectada. Intentando Re-OCR...")
+        id_bloque = -1
+        if datos["Cedula"]:
+            cedula_digits = re.sub(r'\D', '', datos["Cedula"])
+            print(f"[{ruta_imagen}] Buscando caja delimitadora para cédula: {cedula_digits}")
             
-            # Segundo pass: Solo números
-            print(f"[{ruta_imagen}] Re-escaneando zona de cédula con alta resolución...")
-            resultado_refinado = lector.readtext(crop_bin, detail=0, allowlist='0123456789')
+            # Buscamos qué bloque contenía la mayoría de los dígitos de la cédula
+            max_overlap = 0
+            for i, res in enumerate(resultados):
+                res_digits = re.sub(r'\D', '', res[1])
+                if len(res_digits) >= 6:
+                    matches = sum(1 for d in cedula_digits if d in res_digits)
+                    if matches > max_overlap:
+                        max_overlap = matches
+                        id_bloque = i
+                    
+        if id_bloque != -1:
+            print(f"[{ruta_imagen}] Bloque de cédula encontrado en índice {id_bloque}: '{resultados[id_bloque][1]}'")
+            bbox = resultados[id_bloque][0]
+            # bbox son 4 puntos: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            x_min = int(min(p[0] for p in bbox))
+            x_max = int(max(p[0] for p in bbox))
+            y_min = int(min(p[1] for p in bbox))
+            y_max = int(max(p[1] for p in bbox))
             
-            if resultado_refinado:
-                texto_refinado = "".join(resultado_refinado)
-                print(f"[{ruta_imagen}] Texto detectado en recorte: {texto_refinado}")
-                nums_refinados = re.sub(r'\D', '', texto_refinado)
+            # Añadir un pequeño margen al recorte
+            margen = 5
+            
+            # ¡CORRECCIÓN AQUÍ! Usamos la imagen que ya está en memoria (img_ocr_gray)
+            # Sus dimensiones cuadran perfectamente con las coordenadas del bbox.
+            h_ocr, w_ocr = img_ocr_gray.shape[:2]
+            crop_id = img_ocr_gray[max(0, y_min-margen):min(h_ocr, y_max+margen), 
+                                max(0, x_min-margen):min(w_ocr, x_max+margen)]
+            
+            if crop_id.size > 0:
+                # Como la imagen ya viene agrandada x2 de pasos anteriores, 
+                # no hace falta hacerle cv2.resize otra vez. Directamente aplicamos threshold.
+                crop_bin = cv2.adaptiveThreshold(crop_id, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                                cv2.THRESH_BINARY, 11, 2)
                 
-                # Si el resultado refinado tiene un largo lógico (7 u 8 dígitos), lo usamos
-                if 7 <= len(nums_refinados) <= 8:
-                    datos["Cedula"] = f"{int(nums_refinados):,}".replace(",", ".")
-                elif len(nums_refinados) > 8:
-                    if nums_refinados.startswith(('1', '2', '3')):
-                        datos["Cedula"] = f"{int(nums_refinados[:8]):,}".replace(",", ".")
-                    else:
-                        datos["Cedula"] = f"{int(nums_refinados[-8:]):,}".replace(",", ".")
+                # Segundo pass: Solo números
+                print(f"[{ruta_imagen}] Re-escaneando zona de cédula con alta resolución...")
+                resultado_refinado = lector.readtext(crop_bin, detail=0, allowlist='0123456789')
+                
+                if resultado_refinado:
+                    texto_refinado = "".join(resultado_refinado)
+                    print(f"[{ruta_imagen}] Texto detectado en recorte: {texto_refinado}")
+                    nums_refinados = re.sub(r'\D', '', texto_refinado)
+                    
+                    # Si el resultado refinado tiene un largo lógico (7 u 8 dígitos), lo usamos
+                    if 7 <= len(nums_refinados) <= 8:
+                        datos["Cedula"] = f"{int(nums_refinados):,}".replace(",", ".")
+                    elif len(nums_refinados) > 8:
+                        if nums_refinados.startswith(('1', '2', '3')):
+                            datos["Cedula"] = f"{int(nums_refinados[:8]):,}".replace(",", ".")
+                        else:
+                            datos["Cedula"] = f"{int(nums_refinados[-8:]):,}".replace(",", ".")
+    elif datos["Cedula"]:
+        print(f"[{ruta_imagen}] Cédula leída perfectamente ({datos['Cedula']}). Omitiendo Re-OCR.")
 
     campos_faltantes = [clave for clave, valor in datos.items() if not valor]
     
@@ -474,11 +540,3 @@ def extraer_datos_cedula(ruta_imagen, lector):
         print(f"{clave}: {valor}")
         
     return datos
-
-# Ejecutar prueba rápida si corres el script directamente
-if __name__ == "__main__":
-    prueba = "cedula.jpg"
-    if os.path.exists(prueba):
-        extraer_datos_cedula(prueba)
-    else:
-        print(f"Coloca una imagen llamada '{prueba}' para testear.")
