@@ -19,7 +19,7 @@ def aislar_zona_datos(imagen_alineada):
     x_min = int(w * 0.10)  # 2% desde el borde izquierdo
     x_max = int(w * 0.65)  # 65% del ancho (corta antes de la foto y el director)
     y_min = int(h * 0.15)  # 15% desde arriba (corta el encabezado de "República")
-    y_max = int(h * 1)  # 75% del alto (corta la huella y fechas de expedición/vencimiento)
+    y_max = int(h * 1)  # 100% del alto (corta la huella y fechas de expedición/vencimiento)
     
     zona_segura = imagen_alineada[y_min:y_max, x_min:x_max]
     
@@ -159,51 +159,69 @@ def ordenar_puntos(pts):
     
     return rect
 
-def corregir_orientacion(imagen, lector):
+def corregir_orientacion(imagen_plana, lector):
     """
-    Verifica si la imagen está vertical o de cabeza y la endereza 
-    automáticamente usando proporciones y una lectura OCR ultrarrápida.
+    Verifica si el documento PLANO está de cabeza y lo endereza.
+    Revisa la parte superior buscando "REPUBLICA". Si no la encuentra, 
+    revisa la parte inferior. Si la encuentra abajo, rota 180.
     """
-    if imagen is None:
+    if imagen_plana is None:
         return None
 
-    h, w = imagen.shape[:2]
+    h, w = imagen_plana.shape[:2]
     
     # 1. FORZAR HORIZONTAL (Apaisado)
     if h > w:
-        print("[ORIENTACIÓN] Imagen vertical detectada. Rotando 90 grados...")
-        # Rotamos 90 grados a favor de las manecillas del reloj
-        imagen = cv2.rotate(imagen, cv2.ROTATE_90_CLOCKWISE)
-        h, w = imagen.shape[:2] # Actualizamos las nuevas dimensiones
+        print("[ORIENTACIÓN] Documento vertical detectado. Rotando 90 grados...")
+        imagen_plana = cv2.rotate(imagen_plana, cv2.ROTATE_90_CLOCKWISE)
+        h, w = imagen_plana.shape[:2]
 
     # 2. PRUEBA DE 180 GRADOS (De cabeza)
-    # Recortamos solo el 30% de arriba. Esto hace que el OCR tarde milisegundos
-    recorte_superior = imagen[0:int(h * 0.3), 0:w]
+    # Recortamos el 35% de arriba (donde debe estar REPÚBLICA BOLIVARIANA)
+    recorte_superior = imagen_plana[0:int(h * 0.35), 0:w]
     
-    # Lo pasamos a grises para máxima velocidad
-    gris_superior = cv2.cvtColor(recorte_superior, cv2.COLOR_BGR2GRAY)
+    if len(imagen_plana.shape) == 3 and imagen_plana.shape[2] == 3:
+        gris_superior = cv2.cvtColor(recorte_superior, cv2.COLOR_BGR2GRAY)
+    else:
+        gris_superior = recorte_superior.copy()
+        
+    # Aumentar contraste para lectura rápida
+    gris_superior = cv2.adaptiveThreshold(gris_superior, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
     
     print("[ORIENTACIÓN] Verificando si el texto está de cabeza...")
-    # detail=0 hace que EasyOCR solo devuelva una lista de textos planos (sin coordenadas)
-    resultados_rapidos = lector.readtext(gris_superior, detail=0)
+    resultados_arriba = lector.readtext(gris_superior, detail=0)
+    texto_arriba = " ".join(resultados_arriba).upper()
     
-    texto_arriba = " ".join(resultados_rapidos).upper()
+    palabras_clave = ["REPUBLICA", "BOLIVARIANA", "VENEZUELA", "CEDULA", "IDENTIDAD", "REP", "BLICA"]
+    coincidencias_arriba = sum(1 for palabra in palabras_clave if palabra in texto_arriba)
     
-    # Palabras clave que SIEMPRE están en la parte superior de la cédula
-    palabras_clave = ["REPUBLICA", "BOLIVARIANA", "VENEZUELA", "CEDULA", "IDENTIDAD"]
-    
-    # Contamos cuántas palabras clave logró leer
-    coincidencias = sum(1 for palabra in palabras_clave if palabra in texto_arriba)
-    
-    if coincidencias == 0:
-        # Si no leyó "Republica" ni "Cedula", lo más probable es que esté leyendo 
-        # la huella dactilar o los números de abajo al revés.
-        print("[ORIENTACIÓN] Imagen de cabeza. Rotando 180 grados...")
-        imagen = cv2.rotate(imagen, cv2.ROTATE_180)
+    if coincidencias_arriba == 0:
+        # Si no encontramos arriba, revisamos abajo para confirmar
+        recorte_inferior = imagen_plana[int(h * 0.65):h, 0:w]
+        
+        if len(imagen_plana.shape) == 3 and imagen_plana.shape[2] == 3:
+            gris_inferior = cv2.cvtColor(recorte_inferior, cv2.COLOR_BGR2GRAY)
+        else:
+            gris_inferior = recorte_inferior.copy()
+        
+        # Debemos rotar el pedazo de abajo 180 para que el OCR lo pueda leer si está invertido
+        gris_inferior_rotado = cv2.rotate(gris_inferior, cv2.ROTATE_180)
+        gris_inferior_rotado = cv2.adaptiveThreshold(gris_inferior_rotado, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        
+        resultados_abajo = lector.readtext(gris_inferior_rotado, detail=0)
+        texto_abajo = " ".join(resultados_abajo).upper()
+        
+        coincidencias_abajo = sum(1 for palabra in palabras_clave if palabra in texto_abajo)
+        
+        if coincidencias_abajo > 0:
+            print("[ORIENTACIÓN] Cabecera encontrada en la parte inferior. Rotando 180 grados...")
+            return cv2.rotate(imagen_plana, cv2.ROTATE_180)
+        else:
+            print("[ORIENTACIÓN] No se pudo confirmar orientación, asumiendo correcta.")
     else:
         print("[ORIENTACIÓN] Imagen derecha confirmada.")
 
-    return imagen
+    return imagen_plana
 
 def escanear_documento(imagen):
     """
@@ -391,13 +409,14 @@ def extraer_datos_cedula(ruta_imagen, lector):
     if imagen_raw is None:
         raise FileNotFoundError(f"No se pudo cargar la imagen: {ruta_imagen}")
 
-    imagen_raw = corregir_orientacion(imagen_raw, lector)
-    
     print(f"[{ruta_imagen}] Aplicando escáner documental (recorte y perspectiva)...")
     
-    # 1. Aplicar escáner documental (Recorte perfecto a color)
-    # Asegúrate de que la función escanear_documento esté retornando la imagen a color (warped)
+    # 1. Aplicar escáner documental ANTES de la orientación
     imagen_procesada_color = escanear_documento(imagen_raw)
+    
+    # 2. Corregir orientación en el documento ya aplanado
+    imagen_procesada_color = corregir_orientacion(imagen_procesada_color, lector)
+    
     imagen_original = imagen_procesada_color.copy()
     
     # Guardamos la foto bonita y natural para tus registros
